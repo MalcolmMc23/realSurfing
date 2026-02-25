@@ -44,6 +44,15 @@ body {
   transform: scaleX(-1);
 }
 
+#game {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+}
+
 #status {
   position: fixed;
   bottom: 16px;
@@ -56,4 +65,85 @@ body {
   font-size: 13px;
   z-index: 10;
   pointer-events: none;
+}
+
+#mode {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #facc15;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+#hud {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+#hud-score,
+#hud-coins {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-family: monospace;
+  font-size: 20px;
+  font-weight: bold;
+  padding: 6px 14px;
+  border-radius: 6px;
+  letter-spacing: 1px;
+}
+
+#game-over {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  z-index: 200;
+  gap: 18px;
+}
+
+#game-over h1 {
+  font-family: monospace;
+  font-size: 52px;
+  color: #ff4444;
+  letter-spacing: 4px;
+  text-shadow: 0 0 20px rgba(255, 68, 68, 0.7);
+}
+
+#game-over p {
+  font-family: monospace;
+  font-size: 22px;
+  color: #fff;
+}
+
+#go-restart {
+  margin-top: 12px;
+  font-family: monospace;
+  font-size: 20px;
+  padding: 12px 36px;
+  background: #f59e0b;
+  color: #000;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  letter-spacing: 2px;
+  transition: background 0.15s;
+}
+
+#go-restart:hover {
+  background: #fbbf24;
 }

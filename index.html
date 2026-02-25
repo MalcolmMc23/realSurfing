@@ -12,6 +12,22 @@
     <canvas id="overlay"></canvas>
   </div>
   <div id="status">Starting camera...</div>
+  <div id="mode">Mode: full</div>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <span id="hud-score">0m</span>
+    <span id="hud-coins">🪙 0</span>
+  </div>
+
+  <div id="game-over" style="display:none">
+    <h1>GAME OVER</h1>
+    <p id="go-score"></p>
+    <p id="go-coins"></p>
+    <button id="go-restart">PLAY AGAIN</button>
+  </div>
+
+  <script type="module" src="game.js"></script>
   <script type="module" src="main.js"></script>
 </body>
 </html>

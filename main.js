@@ -7,6 +7,10 @@ const video = document.getElementById("cam");
 const canvas = document.getElementById("overlay");
 const ctx = canvas.getContext("2d");
 const status = document.getElementById("status");
+const modeEl = document.getElementById("mode");
+
+// Tracking modes: "finger" | "full" | "open"
+let trackingMode = "full";
 
 // Colors per hand
 const HAND_COLORS = {
@@ -33,6 +37,90 @@ const HAND_CONNECTIONS = [
 let handLandmarker = null;
 let animFrameId = null;
 let lastVideoTime = -1;
+
+// Swipe detection
+const SWIPE_THRESHOLD = 0.15;  // normalized units (0–1) over the time window
+const SWIPE_TIME_WINDOW = 250; // ms — how far back to look
+const COOLDOWN_MS = 600;       // ms — silence after a swipe fires
+
+const swipeState = {
+  history: [],    // [{ x, y, t }] — recent wrist positions
+  cooldown: false,
+};
+
+function isIndexFingerExtended(landmarks) {
+  const wrist = landmarks[0];
+  const mcp   = landmarks[5];
+  const tip   = landmarks[8];
+  const dist2 = (a, b) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+  return dist2(tip, wrist) > dist2(mcp, wrist) * 1.8;
+}
+
+function getOpenHandCenter(landmarks) {
+  const tips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+  return {
+    x: tips.reduce((s, p) => s + p.x, 0) / tips.length,
+    y: tips.reduce((s, p) => s + p.y, 0) / tips.length,
+  };
+}
+
+function isHandOpen(landmarks) {
+  const tips = [landmarks[4], landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+  const xs = tips.map(p => p.x);
+  return Math.max(...xs) - Math.min(...xs) > 0.12;
+}
+
+function detectSwipe(landmarks) {
+  let pt;
+  if (trackingMode === "finger") {
+    if (!isIndexFingerExtended(landmarks)) { swipeState.history = []; return; }
+    pt = { x: landmarks[8].x, y: landmarks[8].y };
+  } else if (trackingMode === "full") {
+    pt = { x: landmarks[0].x, y: landmarks[0].y };
+  } else {  // open
+    if (!isHandOpen(landmarks)) { swipeState.history = []; return; }
+    pt = getOpenHandCenter(landmarks);
+  }
+
+  const threshold  = trackingMode === "open" ? 0.10 : SWIPE_THRESHOLD;
+  const timeWindow = trackingMode === "open" ? 350  : SWIPE_TIME_WINDOW;
+
+  const now = Date.now();
+  swipeState.history.push({ ...pt, t: now });
+  swipeState.history = swipeState.history.filter(e => now - e.t <= timeWindow);
+
+  if (swipeState.cooldown || swipeState.history.length < 2) return;
+
+  const oldest = swipeState.history[0];
+  const current = swipeState.history[swipeState.history.length - 1];
+  const dx = current.x - oldest.x;
+  const dy = current.y - oldest.y;
+
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < threshold) return;
+
+  // Mirror correction: video/canvas are scaleX(-1), so x-axis is inverted
+  const direction = Math.abs(dx) > Math.abs(dy)
+    ? (dx < 0 ? "right" : "left")
+    : (dy < 0 ? "up" : "down");
+
+  console.log("Swiped " + direction);
+  globalThis.dispatchEvent(new CustomEvent("swipe", { detail: direction }));
+  swipeState.cooldown = true;
+  swipeState.history = [];
+  setTimeout(() => { swipeState.cooldown = false; }, COOLDOWN_MS);
+}
+
+function setMode(mode) {
+  trackingMode = mode;
+  swipeState.history = [];
+  modeEl.textContent = "Mode: " + mode;
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "1") setMode("finger");
+  else if (e.key === "2") setMode("full");
+  else if (e.key === "3") setMode("open");
+});
 
 async function init() {
   status.textContent = "Loading MediaPipe...";
@@ -101,6 +189,7 @@ function render(result) {
 
     drawConnections(landmarks, colors.line);
     drawDots(landmarks, colors.dot);
+    detectSwipe(landmarks);
   });
 }
 
