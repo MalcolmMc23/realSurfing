@@ -124,7 +124,7 @@ function drawDots(landmarks, color) {
     const x = lm.x * canvas.width;
     const y = lm.y * canvas.height;
     ctx.beginPath();
-    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
     ctx.fillStyle = color;
     ctx.fill();
     ctx.strokeStyle = "#fff";
