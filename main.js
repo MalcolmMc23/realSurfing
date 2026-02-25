@@ -74,8 +74,10 @@ async function startCamera() {
 }
 
 function syncCanvasSize() {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  // Match canvas resolution to its CSS display size so landmark
+  // coordinates map 1:1 with what the user actually sees.
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
 }
 
 function loop() {
