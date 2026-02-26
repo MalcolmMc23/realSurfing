@@ -19,13 +19,14 @@ const DASH_COUNT    = Math.ceil(TILE_LEN / (DASH_LEN + DASH_GAP));
 // Train / obstacle constants
 const TRAIN_W        = 2.6;
 const TRAIN_H        = 2.8;
-const TRAIN_LEN      = 16;
+const TRAIN_LENGTHS  = [10, 16, 22, 28];
 const RAMP_LEN       = 7;
 const TRAIN_TOP_Y    = 2.9;
 const MOVING_BONUS   = 0.35;
-const SPAWN_MIN      = 50;
-const SPAWN_VARIANCE = 50;
+const SPAWN_MIN      = 25;
+const SPAWN_VARIANCE = 20;
 const MAX_EXTRA_SPEED = 0.4;
+const FAR_Z          = -(TILE_COUNT * TILE_LEN) - 28;
 
 // ── Renderer ───────────────────────────────────────────────────────────
 const canvas   = document.getElementById('game');
@@ -80,6 +81,7 @@ const matEye      = new THREE.MeshStandardMaterial({ color: 0x222222 });
 // Train materials
 const matTrainSolid   = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.7 });
 const matTrainMoving  = new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 0.7 });
+const matTrainRamp    = new THREE.MeshStandardMaterial({ color: 0x2d5a1b, roughness: 0.7 });
 const matTrainStripe  = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.5 });
 const matTrainWindow  = new THREE.MeshStandardMaterial({ color: 0xffff88, emissive: 0xffff44, emissiveIntensity: 0.6 });
 const matTrainHeadlight = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffff99, emissiveIntensity: 1.5 });
@@ -197,6 +199,7 @@ playerGroup.position.set(0, 0, 0);
 scene.add(playerGroup);
 
 // ── Player state ───────────────────────────────────────────────────────
+// States: 'running' | 'jumping' | 'rolling' | 'onTrain'
 const JUMP_VELOCITY  = 0.22;
 const GRAVITY        = 0.012;
 const ROLL_DURATION  = 0.7;
@@ -205,35 +208,30 @@ const player = {
   lane: 1,
   x: 0,
   tilt: 0,
-  isJumping: false,
-  jumpVY: 0,
+  state: 'running',  // replaces isJumping / isRolling / onTrainTop
   jumpY: 0,
-  isRolling: false,
+  jumpVY: 0,
   rollTimer: 0,
-  onTrainTop: false,
-  trainTopY: 0,
-  trainRef: null,
+  trainRef: null,    // which obstacle we're riding (only valid in 'onTrain')
 };
 
 function doJump() {
-  if (player.onTrainTop) {
+  if (player.state === 'onTrain') {
     // Jump off roof
-    player.onTrainTop = false;
+    player.state   = 'jumping';
     player.trainRef = null;
-    player.isJumping = true;
-    player.jumpVY = JUMP_VELOCITY;
+    player.jumpVY  = JUMP_VELOCITY;
     return;
   }
-  if (player.isJumping) return;
-  player.isRolling = false;
+  if (player.state === 'jumping') return;
+  player.state     = 'jumping';
   player.rollTimer = 0;
-  player.isJumping = true;
-  player.jumpVY = JUMP_VELOCITY;
+  player.jumpVY    = JUMP_VELOCITY;
 }
 
 function doRoll() {
-  if (player.isJumping || player.onTrainTop) return;
-  player.isRolling = true;
+  if (player.state !== 'running') return;
+  player.state     = 'rolling';
   player.rollTimer = ROLL_DURATION;
 }
 
@@ -242,7 +240,7 @@ const game = {
   state:     'playing',
   distance:  0,
   coins:     0,
-  nextSpawn: 60,
+  nextSpawn: 15,
   speed:     SPEED,
 };
 
@@ -275,20 +273,18 @@ function resetGame() {
   game.state     = 'playing';
   game.distance  = 0;
   game.coins     = 0;
-  game.nextSpawn = 60;
+  game.nextSpawn = 15;
+  nextCoinSpawn  = 10;
   game.speed     = SPEED;
 
-  player.lane        = 1;
-  player.x           = 0;
-  player.tilt        = 0;
-  player.isJumping   = false;
-  player.jumpVY      = 0;
-  player.jumpY       = 0;
-  player.isRolling   = false;
-  player.rollTimer   = 0;
-  player.onTrainTop  = false;
-  player.trainTopY   = 0;
-  player.trainRef    = null;
+  player.lane      = 1;
+  player.x         = 0;
+  player.tilt      = 0;
+  player.state     = 'running';
+  player.jumpY     = 0;
+  player.jumpVY    = 0;
+  player.rollTimer = 0;
+  player.trainRef  = null;
 
   playerGroup.position.set(0, 0, 0);
   playerGroup.scale.set(1, 1, 1);
@@ -316,14 +312,17 @@ function resetGame() {
 goRestart.addEventListener('click', resetGame);
 
 // ── Train mesh builder ─────────────────────────────────────────────────
-function buildTrainMesh(type) {
+// Types: 'solid' (stationary, no ramp), 'moving' (oncoming, no ramp), 'ramp' (stationary, climbable)
+function buildTrainMesh(type, len = 16) {
   const group = new THREE.Group();
 
-  const bodyMat = type === 'moving' ? matTrainMoving : matTrainSolid;
+  const bodyMat = type === 'moving' ? matTrainMoving
+                : type === 'ramp'   ? matTrainRamp
+                :                     matTrainSolid;
 
   // Main body
   const trainBody = new THREE.Mesh(
-    new THREE.BoxGeometry(TRAIN_W, TRAIN_H, TRAIN_LEN),
+    new THREE.BoxGeometry(TRAIN_W, TRAIN_H, len),
     bodyMat
   );
   trainBody.position.y = TRAIN_H / 2;
@@ -332,20 +331,20 @@ function buildTrainMesh(type) {
 
   // Roof stripe
   const stripe = new THREE.Mesh(
-    new THREE.BoxGeometry(TRAIN_W, 0.12, TRAIN_LEN),
+    new THREE.BoxGeometry(TRAIN_W, 0.12, len),
     matTrainStripe
   );
   stripe.position.y = TRAIN_H + 0.06;
   group.add(stripe);
 
-  // Windows — 4 per side (positive Z side = facing player)
-  const winGeo = new THREE.BoxGeometry(0.5, 0.5, 0.05);
-  const windowPositions = [-5, -2, 1, 4];
-  for (const wz of windowPositions) {
+  // Windows — scaled with train length
+  const winCount   = Math.max(2, Math.floor(len / 5));
+  const winSpacing = len / (winCount + 1);
+  const winGeo     = new THREE.BoxGeometry(0.5, 0.5, 0.05);
+  for (let w = 0; w < winCount; w++) {
+    const wz  = -len / 2 + winSpacing * (w + 1);
     const win = new THREE.Mesh(winGeo, matTrainWindow);
-    win.position.set(0, TRAIN_H * 0.55, -(TRAIN_LEN / 2) + 0.03);
-    win.position.z = wz;
-    win.position.y = TRAIN_H * 0.6;
+    win.position.set(0, TRAIN_H * 0.6, wz);
     group.add(win);
   }
 
@@ -354,18 +353,18 @@ function buildTrainMesh(type) {
     const hlGeo = new THREE.BoxGeometry(0.4, 0.25, 0.05);
     for (const hx of [-0.7, 0.7]) {
       const hl = new THREE.Mesh(hlGeo, matTrainHeadlight);
-      hl.position.set(hx, TRAIN_H * 0.35, TRAIN_LEN / 2 + 0.03);
+      hl.position.set(hx, TRAIN_H * 0.35, len / 2 + 0.03);
       group.add(hl);
     }
   }
 
-  // All train types get a ramp at the front so the player can ride on top
-  {
+  // Only 'ramp' type trains have a climbable ramp
+  if (type === 'ramp') {
     const rampGeo = new THREE.PlaneGeometry(TRAIN_W, RAMP_LEN);
     const ramp = new THREE.Mesh(rampGeo, matRamp);
     const angle = Math.atan2(TRAIN_H, RAMP_LEN);
     ramp.rotation.x = -(Math.PI / 2 - angle);
-    ramp.position.set(0, TRAIN_H / 2 * Math.sin(angle), TRAIN_LEN / 2 + RAMP_LEN / 2 * Math.cos(angle));
+    ramp.position.set(0, TRAIN_H / 2 * Math.sin(angle), len / 2 + RAMP_LEN / 2 * Math.cos(angle));
     group.add(ramp);
   }
 
@@ -376,9 +375,9 @@ function buildTrainMesh(type) {
 const obstaclePool   = [];
 const activeObstacles = [];
 
-function getObstacleFromPool(type) {
-  // Look for a matching type in pool
-  const idx = obstaclePool.findIndex(o => o.type === type);
+function getObstacleFromPool(type, len) {
+  // Look for a matching type+length in pool
+  const idx = obstaclePool.findIndex(o => o.type === type && o.len === len);
   if (idx !== -1) {
     const obs = obstaclePool.splice(idx, 1)[0];
     obs.active = true;
@@ -386,11 +385,12 @@ function getObstacleFromPool(type) {
     return obs;
   }
   // Create new
-  const group = buildTrainMesh(type);
+  const group = buildTrainMesh(type, len);
   scene.add(group);
   return {
     group,
     type,
+    len,
     lane: 1,
     speed: SPEED,
     active: true,
@@ -398,23 +398,70 @@ function getObstacleFromPool(type) {
   };
 }
 
-function spawnObstacle() {
+// ── Spawn event helpers ────────────────────────────────────────────────
+function randLane()  { return Math.floor(Math.random() * 3); }
+function randLen()   { return TRAIN_LENGTHS[Math.floor(Math.random() * TRAIN_LENGTHS.length)]; }
+function shuffleLanes() { return [0, 1, 2].sort(() => Math.random() - 0.5); }
+
+function pickType() {
   const r = Math.random();
-  const type = r < 0.4 ? 'solid' : r < 0.7 ? 'moving' : 'ramp';
-  const lane = Math.floor(Math.random() * LANE_COUNT);
+  return r < 0.4 ? 'solid' : r < 0.7 ? 'moving' : 'ramp';
+}
 
-  const obs = getObstacleFromPool(type);
-  obs.lane = lane;
+function pickNonMoving() {
+  return Math.random() < 0.55 ? 'solid' : 'ramp';
+}
+
+function placeTrain(type, lane, z, len) {
+  const obs  = getObstacleFromPool(type, len);
+  obs.lane   = lane;
+  obs.len    = len;
   obs.onRamp = false;
-
-  // Speed: moving trains approach faster (toward player = positive Z direction)
-  // All obstacles move in +Z (toward camera). Moving trains come from ahead faster.
-  obs.speed = type === 'moving' ? game.speed + MOVING_BONUS : game.speed;
-
-  // Place far ahead (negative Z = ahead of player)
-  obs.group.position.set(LANE_XS[lane], 0, -(TILE_COUNT * TILE_LEN) - TRAIN_LEN);
+  obs.speed  = type === 'moving' ? game.speed + MOVING_BONUS : game.speed;
+  obs.group.position.set(LANE_XS[lane], 0, z);
   obs.group.visible = true;
   activeObstacles.push(obs);
+}
+
+function spawnSingle() {
+  placeTrain(pickType(), randLane(), FAR_Z, randLen());
+}
+
+function spawnPair() {
+  const lanes = shuffleLanes().slice(0, 2);
+  // Guarantee at least 1 ramp so player has a climbable option
+  const types = ['ramp', pickNonMoving()].sort(() => Math.random() - 0.5);
+  for (let i = 0; i < 2; i++) {
+    placeTrain(types[i], lanes[i], FAR_Z, randLen());
+  }
+}
+
+function spawnWall() {
+  const types = [pickNonMoving(), pickNonMoving(), pickNonMoving()];
+  // Guarantee at least 1 ramp so player can survive
+  if (!types.includes('ramp')) types[Math.floor(Math.random() * 3)] = 'ramp';
+  for (let lane = 0; lane < 3; lane++) {
+    placeTrain(types[lane], lane, FAR_Z, randLen());
+  }
+}
+
+function spawnConvoy() {
+  const lane  = randLane();
+  const count = 2 + Math.floor(Math.random() * 2); // 2 or 3
+  let z = FAR_Z;
+  for (let i = 0; i < count; i++) {
+    const len = randLen();
+    placeTrain(pickNonMoving(), lane, z, len);
+    z -= len + 4 + Math.random() * 8;
+  }
+}
+
+function spawnEvent() {
+  const r = Math.random();
+  if      (r < 0.40) spawnSingle();
+  else if (r < 0.70) spawnPair();
+  else if (r < 0.85) spawnWall();
+  else               spawnConvoy();
 }
 
 // ── Coin pool ──────────────────────────────────────────────────────────
@@ -456,16 +503,16 @@ function spawnCoinArc(lane, startZ, count) {
   }
 }
 
-// Spawn coins independently of obstacles (every 30-60 units)
-let nextCoinSpawn = 40;
+// Spawn coins independently of obstacles (every 15-30 units)
+let nextCoinSpawn = 10;
 
 function maybeSpawnCoins() {
   if (game.distance < nextCoinSpawn) return;
-  nextCoinSpawn = game.distance + 30 + Math.random() * 30;
+  nextCoinSpawn = game.distance + 15 + Math.random() * 15;
 
   const lane  = Math.floor(Math.random() * LANE_COUNT);
   const startZ = -(TILE_COUNT * TILE_LEN);
-  const count  = 3 + Math.floor(Math.random() * 5);
+  const count  = 6 + Math.floor(Math.random() * 6);
 
   if (Math.random() < 0.35) {
     spawnCoinArc(lane, startZ, count);
@@ -478,77 +525,100 @@ function maybeSpawnCoins() {
 const CAMERA_Z = 12; // camera z
 
 function checkCollision(obs) {
-  const oz = obs.group.position.z;
-  const zFront = oz + TRAIN_LEN / 2;
-  const zBack  = oz - TRAIN_LEN / 2;
+  // Immune while on any train roof
+  if (player.state === 'onTrain') return false;
+  // Immune while climbing this train's ramp
+  if (player.trainRef === obs) return false;
+
+  const oz     = obs.group.position.z;
+  const zFront = oz + obs.len / 2;
+  const zBack  = oz - obs.len / 2;
   const inZ    = zBack < 1.5 && zFront > -1.5;
   const inX    = Math.abs(player.x - LANE_XS[obs.lane]) < 1.8;
 
   if (!inZ || !inX) return false;
 
-  // Player riding this train's roof — no collision
-  if (player.trainRef === obs) return false;
-
-  // Player elevated above train top — jumped over
+  // Player jumped over the train
   if (player.jumpY >= TRAIN_H) return false;
 
   return true;
 }
 
+// ── Ramp / roof interaction ────────────────────────────────────────────
+// Only 'ramp' type trains support climbing and roof riding.
 function updateRampPlayer(obs) {
-  // Applies to all train types — every train has a climbable ramp on its front
+  if (obs.type !== 'ramp') return;
+
   const inX = Math.abs(player.x - LANE_XS[obs.lane]) < 1.8;
   if (!inX) {
-    // Player lane-changed off this train
-    if (player.trainRef === obs) {
-      player.onTrainTop = false;
-      player.trainRef   = null;
-      player.isJumping  = true;
-      player.jumpVY     = 0;
-    }
+    // Player lane-changed away from this train — null ref, let resolveTrainTop decide
+    if (player.trainRef === obs) player.trainRef = null;
     return;
   }
 
-  const oz = obs.group.position.z;
-  const rampFront = oz + TRAIN_LEN / 2 + RAMP_LEN;
-  const rampBase  = oz + TRAIN_LEN / 2;
-  const trainBack = oz - TRAIN_LEN / 2;
+  const oz        = obs.group.position.z;
+  const rampFront = oz + obs.len / 2 + RAMP_LEN;
+  const rampBase  = oz + obs.len / 2;
+  const trainBack = oz - obs.len / 2;
 
   // Ramp climbing phase
-  if (!player.onTrainTop && player.jumpY < TRAIN_TOP_Y + 0.5) {
+  if (player.state !== 'onTrain' && player.jumpY < TRAIN_TOP_Y + 0.5) {
     if (rampBase < 0 && rampFront > 0) {
-      // Claim this obs immediately so checkCollision skips it during climb
+      // Claim this obs so checkCollision skips it during climb
       if (player.trainRef === null) player.trainRef = obs;
 
-      const progress = 1 - (rampFront / RAMP_LEN);  // 0 at base → 1 at top
+      const progress = 1 - (rampFront / RAMP_LEN); // 0 at base → 1 at top
       const targetY  = progress * TRAIN_TOP_Y;
       if (targetY > player.jumpY) {
-        player.jumpY     = targetY;
-        player.isJumping = false;
-        player.jumpVY    = 0;
+        player.jumpY  = targetY;
+        player.state  = 'running'; // cancel jump physics while climbing
+        player.jumpVY = 0;
       }
       if (progress >= 0.92) {
-        player.onTrainTop = true;
-        player.jumpY      = TRAIN_TOP_Y;
-        player.isJumping  = false;
-        player.jumpVY     = 0;
+        player.state  = 'onTrain';
+        player.jumpY  = TRAIN_TOP_Y;
+        player.jumpVY = 0;
       }
     }
   }
 
   // Roof-riding phase
-  if (player.onTrainTop && player.trainRef === obs) {
+  if (player.state === 'onTrain' && player.trainRef === obs) {
     player.jumpY = TRAIN_TOP_Y;
 
-    // Train back has passed the player — fall off
+    // Train back has passed the player — fall off rear
     if (trainBack > 1.5) {
-      player.onTrainTop = false;
-      player.trainRef   = null;
-      player.isJumping  = true;
-      player.jumpVY     = 0;
-      // jumpY stays at TRAIN_TOP_Y, gravity carries them down
+      player.state   = 'jumping';
+      player.trainRef = null;
+      player.jumpVY  = 0;
+      // jumpY stays at TRAIN_TOP_Y, gravity carries player down
     }
   }
+}
+
+// ── Roof-to-roof lane transfer ─────────────────────────────────────────
+// Called after all updateRampPlayer calls each frame.
+// If player is onTrain but trainRef was cleared (lane change), find the new train.
+function resolveTrainTop() {
+  if (player.state !== 'onTrain' || player.trainRef !== null) return;
+
+  // Search for a ramp-type train under the player's current position
+  for (const obs of activeObstacles) {
+    if (obs.type !== 'ramp') continue;
+    if (Math.abs(player.x - LANE_XS[obs.lane]) >= 1.8) continue;
+    const oz = obs.group.position.z;
+    if (oz - obs.len / 2 < 1.5 && oz + obs.len / 2 > -1.5) {
+      // Found a train — transfer onto it
+      player.trainRef = obs;
+      player.jumpY    = TRAIN_TOP_Y;
+      return;
+    }
+  }
+
+  // No train below — fall
+  player.state  = 'jumping';
+  player.jumpVY = 0;
+  // jumpY stays at TRAIN_TOP_Y, gravity takes over
 }
 
 // ── Obstacle update ────────────────────────────────────────────────────
@@ -556,7 +626,7 @@ function updateObstacles(dt) {
   for (let i = activeObstacles.length - 1; i >= 0; i--) {
     const obs = activeObstacles[i];
 
-    // Sync speed: solid trains match world speed; moving trains keep their own speed
+    // Sync speed: solid/ramp trains match world speed; moving trains keep their own speed
     if (obs.type !== 'moving') {
       obs.speed = game.speed;
     }
@@ -564,7 +634,7 @@ function updateObstacles(dt) {
     obs.group.position.z += obs.speed;
 
     // Recycle if past camera
-    if (obs.group.position.z > CAMERA_Z + TRAIN_LEN) {
+    if (obs.group.position.z > CAMERA_Z + obs.len) {
       obs.group.visible = false;
       obs.active = false;
       activeObstacles.splice(i, 1);
@@ -572,7 +642,7 @@ function updateObstacles(dt) {
       continue;
     }
 
-    // Ramp interaction
+    // Ramp interaction (ramp-type only)
     updateRampPlayer(obs);
 
     // Collision check
@@ -581,6 +651,9 @@ function updateObstacles(dt) {
       return;
     }
   }
+
+  // After all trains processed: resolve roof-to-roof transfer or fall
+  resolveTrainTop();
 }
 
 // ── Coin update ────────────────────────────────────────────────────────
@@ -672,7 +745,7 @@ function animate() {
 
   // Spawn obstacles
   if (game.distance >= game.nextSpawn) {
-    spawnObstacle();
+    spawnEvent();
     game.nextSpawn = game.distance + SPAWN_MIN + Math.random() * SPAWN_VARIANCE;
   }
 
@@ -723,31 +796,31 @@ function animate() {
   playerGroup.rotation.z = THREE.MathUtils.clamp(player.tilt, -MAX_TILT, MAX_TILT);
 
   // ── Jump physics ──────────────────────────────────────────────────────
-  if (player.onTrainTop) {
+  if (player.state === 'onTrain') {
     // Locked on train roof — no gravity
-    player.jumpY = TRAIN_TOP_Y;
-    player.isJumping = false;
-  } else if (player.isJumping) {
+    player.jumpY  = TRAIN_TOP_Y;
+    player.jumpVY = 0;
+  } else if (player.state === 'jumping') {
     player.jumpY  += player.jumpVY;
     player.jumpVY -= GRAVITY;
     if (player.jumpY <= 0) {
       player.jumpY  = 0;
       player.jumpVY = 0;
-      player.isJumping = false;
+      player.state  = 'running';
     }
   }
 
   // ── Roll timer ────────────────────────────────────────────────────────
-  if (player.isRolling) {
+  if (player.state === 'rolling') {
     player.rollTimer -= dt;
     if (player.rollTimer <= 0) {
-      player.isRolling = false;
+      player.state     = 'running';
       player.rollTimer = 0;
     }
   }
 
   // ── Player shape based on state ──────────────────────────────────────
-  if (player.isRolling) {
+  if (player.state === 'rolling') {
     playerGroup.scale.set(1.3, 0.45, 1.3);
   } else {
     playerGroup.scale.set(1, 1, 1);
@@ -756,15 +829,16 @@ function animate() {
   // ── Run bob animation ─────────────────────────────────────────────────
   const bobFreq = 12;
   const bobAmp  = 0.08;
-  const groundY = (player.isRolling || player.onTrainTop) ? 0 : Math.abs(Math.sin(time * bobFreq)) * bobAmp;
+  const groundY = (player.state === 'rolling' || player.state === 'onTrain') ? 0
+                : Math.abs(Math.sin(time * bobFreq)) * bobAmp;
   playerGroup.position.y = player.jumpY + groundY;
 
   // Lean forward when jumping
-  const targetPitch = player.isJumping ? -0.25 : 0;
+  const targetPitch = player.state === 'jumping' ? -0.25 : 0;
   playerGroup.rotation.x += (targetPitch - playerGroup.rotation.x) * 0.12;
 
   // Leg animation
-  const legSwing = player.isRolling ? 0 : Math.sin(time * bobFreq) * 0.3;
+  const legSwing = player.state === 'rolling' ? 0 : Math.sin(time * bobFreq) * 0.3;
   leftLeg.rotation.x  =  legSwing;
   rightLeg.rotation.x = -legSwing;
 
